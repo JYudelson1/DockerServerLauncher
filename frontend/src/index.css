@@ -137,6 +137,7 @@ tr:hover {
 .status-running { color: #4caf50; }
 .status-failed { color: #f44336; }
 .status-terminated { color: #9e9e9e; }
+.status-restarting { color: #ff9800; }
 
 button {
   margin-right: 8px;
