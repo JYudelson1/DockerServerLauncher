@@ -1,8 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 
 function DeploymentRow({ deployment, onDelete }) {
-  const [showLogs, setShowLogs] = useState(false);
-  const [logs, setLogs] = useState([]);
   const [copied, setCopied] = useState(false);
 
   const handleConnect = async () => {
@@ -15,13 +13,23 @@ function DeploymentRow({ deployment, onDelete }) {
     await fetch(`http://localhost:5001/api/deployments/${deployment.id}/logs/open`);
   };
 
+  const handleRestart = async () => {
+    if (!window.confirm(`Restart deployment ${deployment.name}?`)) {
+      return;
+    }
+    await fetch(`http://localhost:5001/api/deployments/${deployment.id}/restart`, {
+      method: 'POST'
+    });
+  };
+
   const handleDelete = async () => {
-    if (window.confirm(`Delete deployment ${deployment.name}?`)) {
+    if (!window.confirm(`Delete deployment ${deployment.name}?`)) {
+      return;
+    }
       await fetch(`http://localhost:5001/api/deployments/${deployment.id}`, {
         method: 'DELETE'
       });
       onDelete();
-    }
   };
 
   const handleCopyExport = () => {
@@ -32,37 +40,7 @@ function DeploymentRow({ deployment, onDelete }) {
     });
   };
 
-  const toggleLogs = () => {
-    if (!showLogs) {
-      // Start streaming logs
-      setLogs([]);
-      const eventSource = new EventSource(
-        `http://localhost:5001/api/deployments/${deployment.id}/logs/stream`
-      );
-      
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-          setLogs(prev => [...prev, data.message]);
-        } else if (data.type === 'complete') {
-          eventSource.close();
-        }
-      };
-      
-      eventSource.onerror = () => {
-        eventSource.close();
-      };
-      
-      // Store eventSource to close it later
-      setShowLogs(eventSource);
-    } else {
-      // Close the stream
-      if (showLogs.close) {
-        showLogs.close();
-      }
-      setShowLogs(false);
-    }
-  };
+  
 
   const getStatusClass = (status) => {
     return `status-${status}`;
@@ -109,8 +87,8 @@ function DeploymentRow({ deployment, onDelete }) {
           <button onClick={handleOpenLogs} className="secondary">
             View Logs
           </button>
-          <button onClick={toggleLogs} className="secondary">
-            {showLogs ? 'Hide' : 'Show'} Live Logs
+          <button onClick={handleRestart} className="danger" disabled={deployment.status !== 'running'}>
+            Restart
           </button>
           <button 
             onClick={handleDelete}
@@ -121,17 +99,6 @@ function DeploymentRow({ deployment, onDelete }) {
           </button>
         </td>
       </tr>
-      {showLogs && (
-        <tr>
-          <td colSpan="6">
-            <div className="logs-container">
-              {logs.map((log, i) => (
-                <div key={i}>{log}</div>
-              ))}
-            </div>
-          </td>
-        </tr>
-      )}
     </>
   );
 }

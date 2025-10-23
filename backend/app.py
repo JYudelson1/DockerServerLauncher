@@ -239,5 +239,26 @@ def open_log_file(deployment_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/deployments/<deployment_id>/restart', methods=['POST'])
+def restart_deployment(deployment_id):
+    """Restart all servers in a deployment (workers and head)."""
+    deployment = storage.get_deployment(deployment_id)
+    if not deployment:
+        return jsonify({'error': 'Deployment not found'}), 404
+
+    key_name = deployment['key_name']
+    key_path = os.getenv("PATH_TO_AWS_PRIVATE_KEY") or f"~/.ssh/{key_name}.pem"
+    key_path = os.path.expanduser(key_path)
+    username = os.getenv('SSH_USERNAME', 'ubuntu')
+
+    ssh_runner = SSHRunner(key_path, username)
+    manager = DeploymentManager(AWSClient(), ssh_runner, storage)
+
+    try:
+        manager.restart_servers(deployment_id)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     app.run(debug=True, port=5001)

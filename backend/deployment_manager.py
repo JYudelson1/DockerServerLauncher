@@ -108,7 +108,17 @@ class DeploymentManager:
                 if log_callback:
                     log_callback(f"[{worker_ip}] Starting worker server...")
                 start_cmd = self._get_worker_setup_command_2()
-                self.ssh.run_command(worker_ip, start_cmd, log_callback, use_pty=False, background=False)
+                rc_start = self.ssh.run_command(worker_ip, start_cmd, log_callback, use_pty=False, background=False)
+                if rc_start != 0 and log_callback:
+                    log_callback(f"[{worker_ip}] Warning: start command exit code {rc_start}")
+
+                # Wait for worker to become healthy before proceeding
+                if log_callback:
+                    log_callback(f"[{worker_ip}] Waiting for worker health...")
+                health_cmd = self._get_worker_health_check_command()
+                rc_health = self.ssh.run_command(worker_ip, health_cmd, log_callback, use_pty=False, background=False)
+                if rc_health != 0:
+                    raise Exception(f"[{worker_ip}] Worker failed to become healthy after start (exit {rc_health})")
 
             for _, worker_ip in workers:
                 t = threading.Thread(target=setup_single_worker, args=(worker_ip,))
@@ -187,6 +197,14 @@ class DeploymentManager:
             "nohup ~/.venv/bin/python -m scalable_docker.worker_server "
             "> ~/scalable_docker_worker_server.log 2>&1 &"
         )
+
+    def _get_worker_health_check_command(self) -> str:
+        """Waits up to ~60s for the worker process to be running (via pgrep)."""
+        return (
+            "bash -lc 'for i in {1..60}; do "
+            "pgrep -f \"scalable_docker\\.worker_server\" >/dev/null 2>&1 && echo \"worker process running\" && exit 0; "
+            "sleep 1; done; echo \"worker process not running\"; exit 1'"
+        )
     
     def _get_head_setup_install_command(self) -> str:
         """Install Python and scalable_docker on head (blocking)"""
@@ -220,3 +238,65 @@ class DeploymentManager:
             self.storage.save_deployment(deployment)
         
         return terminated
+
+    def restart_servers(self, deployment_id: str) -> None:
+        """Restart all servers (workers and head) by killing Python processes and re-running start commands."""
+        deployment = self.storage.get_deployment(deployment_id)
+        if not deployment:
+            raise Exception("Deployment not found")
+        
+        deployment['status'] = 'restarting'
+        self.storage.save_deployment(deployment)
+
+        log = self._make_log_callback(deployment_id)
+        log("Restart requested: killing Python processes and restarting servers on all nodes...")
+
+        # Collect IPs
+        head = deployment.get('head') or {}
+        head_ip = head.get('ip')
+        worker_ips = [w['ip'] for w in deployment.get('workers', [])]
+
+        if not head_ip:
+            raise Exception("Head IP not found for deployment")
+
+        # Build commands (target only our processes)
+        kill_workers_cmd = "pkill -9 -f 'scalable_docker\\.worker_server' || true"
+        kill_head_cmd = "pkill -9 -f 'scalable_docker\\.head_server' || true"
+
+        # Workers: kill then re-run the worker start command
+        worker_start_cmd = self._get_worker_setup_command_2()
+
+        # Head: kill then re-run the head start command with current workers
+        comma_separated_urls = ','.join(f"http://{ip}:8080" for ip in worker_ips)
+        head_start_cmd = self._get_head_setup_start_command(comma_separated_urls)
+
+        # First: restart all workers (kill -> start -> health)
+        if worker_ips:
+            log("Restarting workers: killing existing worker processes...")
+            kill_commands = [(ip, kill_workers_cmd) for ip in worker_ips]
+            self.ssh.run_parallel(kill_commands, log_callback=log, use_pty=False, background=False)
+
+            log("Starting worker servers in parallel...")
+            start_commands = [(ip, worker_start_cmd) for ip in worker_ips]
+            # Use background=True for start commands to avoid any blocking on remote launch
+            self.ssh.run_parallel(start_commands, log_callback=log, use_pty=False, background=True)
+
+            log("Verifying worker processes with pgrep...")
+            health_cmd = self._get_worker_health_check_command()
+            health_commands = [(ip, health_cmd) for ip in worker_ips]
+            self.ssh.run_parallel(health_commands, log_callback=log, use_pty=False, background=False)
+            log("All workers healthy. Proceeding to restart head...")
+        else:
+            log("No workers found; proceeding to restart head...")
+
+        # Then: restart the head (kill -> start)
+        log("Restarting head: killing existing head server process...")
+        self.ssh.run_command(head_ip, kill_head_cmd, log_callback=log, use_pty=False, background=False)
+
+        log("Starting head server...")
+        # Use background=True for start command to avoid any blocking on remote launch
+        self.ssh.run_command(head_ip, head_start_cmd, log_callback=log, use_pty=False, background=True)
+
+        log("✓ Restart complete")
+        deployment['status'] = 'running'
+        self.storage.save_deployment(deployment)
