@@ -4,9 +4,12 @@ import os
 from datetime import datetime
 from typing import Dict, List, Tuple
 import threading
+from ssh_runner import SSHRunner
+from aws_client import AWSClient
+from storage import Storage
 
 class DeploymentManager:
-    def __init__(self, aws_client, ssh_runner, storage):
+    def __init__(self, aws_client: AWSClient, ssh_runner: SSHRunner, storage: Storage):
         self.aws = aws_client
         self.ssh = ssh_runner
         self.storage = storage
@@ -90,31 +93,46 @@ class DeploymentManager:
             log_callback(f"Head node: {head_ip}")
             log_callback(f"Worker nodes: {', '.join(wip for _, wip in workers)}")
             
-            # Step 4: Set up workers in parallel
+            # Step 4: Set up workers per-worker (install then start), in parallel across workers
             log_callback("Setting up worker nodes (installing dependencies)...")
-            worker_commands = []
+            worker_threads = []
+
+            def setup_single_worker(worker_ip: str):
+                # Install dependencies (blocking)
+                install_cmd = self._get_worker_setup_command_1()
+                rc = self.ssh.run_command(worker_ip, install_cmd, log_callback, use_pty=False, background=False)
+                if rc != 0:
+                    raise Exception(f"[{worker_ip}] Worker dependency installation failed with exit code {rc}")
+
+                # Start worker server (remote background via nohup)
+                if log_callback:
+                    log_callback(f"[{worker_ip}] Starting worker server...")
+                start_cmd = self._get_worker_setup_command_2()
+                self.ssh.run_command(worker_ip, start_cmd, log_callback, use_pty=False, background=False)
+
             for _, worker_ip in workers:
-                cmd1 = self._get_worker_setup_command_1()
-                worker_commands.append((worker_ip, cmd1))
-            
-            self.ssh.run_parallel(worker_commands, log_callback)
-            
-            log_callback("Starting worker servers...")
-            worker_commands_2 = []
-            for _, worker_ip in workers:
-                cmd2 = self._get_worker_setup_command_2()
-                worker_commands_2.append((worker_ip, cmd2))
-            
-            self.ssh.run_parallel(worker_commands_2, log_callback)
-            
+                t = threading.Thread(target=setup_single_worker, args=(worker_ip,))
+                t.start()
+                worker_threads.append(t)
+
+            # Wait for all workers to finish their per-worker sequence (mirrors `wait`)
+            for t in worker_threads:
+                t.join()
+
             # Step 5: Set up head node
             log_callback("Setting up head node...")
             worker_ips = [wip for _, wip in workers]
             comma_separated_urls = ','.join(
                 f"http://{ip}:8080" for ip in worker_ips
             )
-            head_command = self._get_head_setup_command(comma_separated_urls)
-            self.ssh.run_command(head_ip, head_command, log_callback)
+            # Split head setup into install (blocking) and start (nohup)
+            head_install_cmd = self._get_head_setup_install_command()
+            rc_head_install = self.ssh.run_command(head_ip, head_install_cmd, log_callback, use_pty=False, background=False)
+            if rc_head_install != 0:
+                raise Exception(f"[{head_ip}] Head install failed with exit code {rc_head_install}")
+
+            head_start_cmd = self._get_head_setup_start_command(comma_separated_urls)
+            self.ssh.run_command(head_ip, head_start_cmd, log_callback, use_pty=False, background=False)
             
             # Done!
             deployment['status'] = 'running'
@@ -170,14 +188,19 @@ class DeploymentManager:
             "> ~/scalable_docker_worker_server.log 2>&1 &"
         )
     
-    def _get_head_setup_command(self, worker_urls: str) -> str:
-        """Returns the head setup command"""
+    def _get_head_setup_install_command(self) -> str:
+        """Install Python and scalable_docker on head (blocking)"""
         return (
             "sudo apt update && "
             "sudo apt install -y python3-pip python3-venv python-is-python3 && "
             "python3 -m venv ~/.venv && "
             "~/.venv/bin/pip install --force-reinstall "
-            "git+https://github.com/astOwOlfo/scalable_docker.git@new && "
+            "git+https://github.com/astOwOlfo/scalable_docker.git@new"
+        )
+
+    def _get_head_setup_start_command(self, worker_urls: str) -> str:
+        """Start head server with nohup (detached)"""
+        return (
             f"nohup ~/.venv/bin/python -m scalable_docker.head_server "
             f"--worker-urls {worker_urls} "
             "> ~/scalable_docker_head_server.log 2>&1 &"
