@@ -104,6 +104,24 @@ def delete_deployment(deployment_id):
         'success': True,
         'terminated_instances': terminated
     })
+    
+@app.route('/api/deployments/clear-terminated', methods=['POST'])
+def clear_terminated():
+    """Remove all terminated deployments from storage"""
+    deployments = storage.get_all_deployments()
+    
+    terminated_ids = [
+        dep_id for dep_id, dep in deployments.items() 
+        if dep.get('status') == 'terminated'
+    ]
+    
+    for dep_id in terminated_ids:
+        storage.delete_deployment(dep_id)
+    
+    return jsonify({
+        'success': True,
+        'cleared_count': len(terminated_ids)
+    })
 
 @app.route('/api/deployments/<deployment_id>/logs/stream', methods=['GET'])
 def stream_logs(deployment_id):
