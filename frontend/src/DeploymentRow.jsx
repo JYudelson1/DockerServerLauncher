@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 function DeploymentRow({ deployment, onDelete }) {
   const [showLogs, setShowLogs] = useState(false);
   const [logs, setLogs] = useState([]);
+  const [copied, setCopied] = useState(false);
 
   const handleConnect = async () => {
     await fetch(`http://localhost:5001/api/connect/${deployment.id}`, {
@@ -21,6 +22,14 @@ function DeploymentRow({ deployment, onDelete }) {
       });
       onDelete();
     }
+  };
+
+  const handleCopyExport = () => {
+    const exportCommand = `export SCALABLE_DOCKER_SERVER_URL=http://${deployment.head_ip}:8080`;
+    navigator.clipboard.writeText(exportCommand).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   };
 
   const toggleLogs = () => {
@@ -68,7 +77,26 @@ function DeploymentRow({ deployment, onDelete }) {
             {deployment.status}
           </span>
         </td>
-        <td>{deployment.head_ip || 'N/A'}</td>
+        <td>
+          {deployment.head_ip ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              
+              <button 
+                onClick={handleCopyExport}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: '12px',
+                  background: copied ? '#4caf50' : '#007bff',
+                  cursor: 'pointer'
+                }}
+                title="Copy export command"
+              >
+                {copied ? '✓' : '📋'}
+              </button>
+              <span>{deployment.head_ip}</span>
+            </div>
+          ) : 'N/A'}
+        </td>
         <td>{deployment.worker_count}</td>
         <td>{new Date(deployment.created_at).toLocaleString()}</td>
         <td>
