@@ -32,7 +32,7 @@ BACKEND_PID=$!
 BACKEND_PGID=$(ps -o pgid= -p "$BACKEND_PID" | tr -d ' ')
 
 sleep 3
-( cd "$CURRENT_DIR/frontend" && exec npm start ) &
+( cd "$CURRENT_DIR/frontend" && npm install && exec npm start ) &
 FRONTEND_PID=$!
 FRONTEND_PGID=$(ps -o pgid= -p "$FRONTEND_PID" | tr -d ' ')
 
