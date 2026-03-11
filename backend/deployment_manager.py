@@ -270,11 +270,20 @@ class DeploymentManager:
         comma_separated_urls = ','.join(f"http://{ip}:8080" for ip in worker_ips)
         head_start_cmd = self._get_head_setup_start_command(comma_separated_urls)
 
-        # First: restart all workers (kill -> start -> health)
+        # First: restart all workers (kill -> cleanup containers -> start -> health)
         if worker_ips:
             log("Restarting workers: killing existing worker processes...")
             kill_commands = [(ip, kill_workers_cmd) for ip in worker_ips]
             self.ssh.run_parallel(kill_commands, log_callback=log, use_pty=False, background=False)
+
+            log("Cleaning up stale Docker containers on workers...")
+            cleanup_cmd = (
+                "for f in ~/.scalable_docker/*/docker-compose.yaml; do "
+                "[ -f \"$f\" ] && docker compose -f \"$f\" down --volumes --remove-orphans 2>/dev/null; "
+                "done; true"
+            )
+            cleanup_commands = [(ip, cleanup_cmd) for ip in worker_ips]
+            self.ssh.run_parallel(cleanup_commands, log_callback=log, use_pty=False, background=False)
 
             log("Starting worker servers in parallel...")
             start_commands = [(ip, worker_start_cmd) for ip in worker_ips]
